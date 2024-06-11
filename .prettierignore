@@ -1,0 +1,42 @@
+# Ignore artifacts:
+build
+coverage
+dist
+node_modules
+
+# Ignore configuration files:
+*.config.js
+*.config.cjs
+*.config.mjs
+*.config.json
+
+# Ignore log files:
+*.log
+
+# Ignore environment variable files:
+.env
+.env.local
+.env.*.local
+
+# Ignore editor directories and files:
+.idea
+.vscode
+*.sublime-project
+*.sublime-workspace
+
+# Ignore system files:
+.DS_Store
+Thumbs.db
+
+# Ignore documentation files:
+*.md
+*.pdf
+
+# Ignore specific directories:
+public
+static
+
+# Ignore package lock files:
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
