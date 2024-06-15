@@ -4,6 +4,7 @@ import User from "../models/user.models.js";
 import { uploadOnCloud } from "../utils/Cloudinary.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import jwt from "jsonwebtoken";
+import { deleteFromCloud } from "../utils/Cloudinary.delete.js";
 
 const generateAccessAndRefreshTokens = async (userId) => {
   try {
@@ -298,11 +299,14 @@ const updateUserAvatar = asyncHandler(async (req, res) => {
     throw new ApiError(401, "Avatar Path Is Missing");
   }
 
+
   const avatar = await uploadOnCloud(avatarLocalPath);
 
   if (!avatar?.url) {
     throw new ApiError(400, "Error While Uploading Avatar On Cloud");
   }
+
+  deleteFromCloud(avatarLocalPath)
 
   const user = await User.findByIdAndUpdate(
     req.user?._id,
