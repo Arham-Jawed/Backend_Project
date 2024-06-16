@@ -14,6 +14,7 @@ const generateAccessAndRefreshTokens = async (userId) => {
     const accessToken = user.generateAccessToken();
 
     user.refreshToken = refreshToken;
+    console.log(user.refreshToken);
     await user.save({ validateBeforeSave: false });
 
     return { refreshToken, accessToken };
@@ -124,7 +125,7 @@ const loginUser = asyncHandler(async (req, res) => {
 
   const { email, username, password } = req.body;
 
-  if (!(email || !username)) {
+  if (!(email || username)) {
     throw new ApiError(400, "Please Enter Atlest One Either username or email");
   }
 
@@ -145,6 +146,7 @@ const loginUser = asyncHandler(async (req, res) => {
   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens(
     user._id
   );
+
 
   const loggedInUser = await User.findById(user._id).select(
     "-password -refreshToken"
@@ -176,8 +178,8 @@ const logoutUser = asyncHandler(async (req, res) => {
   await User.findByIdAndUpdate(
     req.user._id,
     {
-      $set: {
-        refreshToken: undefined,
+      $unset: {
+        refreshToken: 1,
       },
     },
     {
@@ -198,35 +200,36 @@ const logoutUser = asyncHandler(async (req, res) => {
 });
 
 const refreshAccessToken = asyncHandler(async (req, res) => {
+  const incomingRefreshToken =
+    req.cookies.refreshToken || req.body.refreshToken;
+    
+  if (!incomingRefreshToken) {
+    throw new ApiError(401, "unauthorized request");
+  }
+
   try {
-    const incomingToken = req.cookies?.refreshToken || req.body?.refreshToken;
-
-    if (!incomingToken) {
-      throw new ApiError(401, "Unauthorized Request");
-    }
-
-    const decodeToken = jwt.verify(
-      incomingToken,
+    const decodedToken = jwt.verify(
+      incomingRefreshToken,
       process.env.REFRESH_TOKEN_SECRET
     );
 
-    if (!decodeToken) {
-      throw new ApiError(401, "Refresh Token Is Expired Or Used");
-    }
-
-    const user = await User.findById(decodeToken?._id);
+    const user = await User.findById(decodedToken?._id);
 
     if (!user) {
-      throw new ApiError(401, "Unauthorized Refresh Token");
+      throw new ApiError(401, "Invalid refresh token");
     }
 
-    const { accessToken, newRefreshToken } =
-      await generateAccessAndRefreshTokens(user._id);
+    if (incomingRefreshToken !== user?.refreshToken) {
+      throw new ApiError(401, "Refresh token is expired or used");
+    }
 
     const options = {
       httpOnly: true,
       secure: true,
     };
+
+    const { accessToken, newRefreshToken } =
+      await generateAccessAndRefreshTokens(user._id);
 
     return res
       .status(200)
@@ -236,17 +239,17 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
         new ApiResponse(
           200,
           { accessToken, refreshToken: newRefreshToken },
-          "Refresh Token is Refreshed Successfully"
+          "Access token refreshed"
         )
       );
   } catch (error) {
-    throw new ApiError(401, error?.message || "Invalid Refresh Token");
+    throw new ApiError(401, error?.message || "Invalid refresh token");
   }
 });
 
 const changeUserPassword = asyncHandler(async (req, res) => {
   const { oldPassword, newPassword } = req.body;
-  const user = await User.findById(req.user._id);
+  const user = await User.findById(req.user?._id);
   if (!user) {
     throw new ApiError(401, "Unauthorized Request");
   }
@@ -300,24 +303,23 @@ const updateUserAvatar = asyncHandler(async (req, res) => {
     throw new ApiError(401, "Avatar Path Is Missing");
   }
 
-
   const avatar = await uploadOnCloud(avatarLocalPath);
 
   if (!avatar?.url) {
     throw new ApiError(400, "Error While Uploading Avatar On Cloud");
   }
+  const user = await User.findById(req.user?._id)
 
-  deleteFromCloud(avatarLocalPath)
+  if(!user){
+    throw new ApiError(401, "User Doesn't Exist")
+  }
 
-  const user = await User.findByIdAndUpdate(
-    req.user?._id,
-    {
-      $set: {
-        avatar: avatar.url,
-      },
-    },
-    { new: true }
-  ).select("-password -refreshToken");
+  const prevAvatarLocalFilePath = user.avatar;
+
+  deleteFromCloud(prevAvatarLocalFilePath);
+
+  user.avatar = avatar.url;
+  await user.save({validateBeforeSave : false});
 
   return res
     .status(200)
@@ -352,123 +354,127 @@ const updateUserCoverImage = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, user, "User coverImage Is Updated Succesfully"));
 });
 
-const getUserChannelProfile = asyncHandler( async (req,res) => {
-  const { username } = req.params
-  if(!username?.trim()){
-    throw new ApiError(401, "Username Is Missing")
+const getUserChannelProfile = asyncHandler(async (req, res) => {
+  const { username } = req.params;
+  if (!username?.trim()) {
+    throw new ApiError(401, "Username Is Missing");
   }
   const channel = await User.aggregate([
     {
-      $match : {
-        username : username?.toLowerCase()
-      }
+      $match: {
+        username: username?.toLowerCase(),
+      },
     },
     {
-      $lookup : {
-        from : "subscriptions",
-        localField : "_id",
-        foreignField : "channel",
-        as : "subscribers"
-      }
+      $lookup: {
+        from: "subscriptions",
+        localField: "_id",
+        foreignField: "channel",
+        as: "subscribers",
+      },
     },
     {
-      $lookup : {
-        from : "subscriptions",
-        localField : "_id",
-        foreignField : "subscriber",
-        as : "subscribedTo"
-      }
+      $lookup: {
+        from: "subscriptions",
+        localField: "_id",
+        foreignField: "subscriber",
+        as: "subscribedTo",
+      },
     },
     {
-      $addFields : {
-        subscribersCount : {
-          $size : "$subscribers"
+      $addFields: {
+        subscribersCount: {
+          $size: "$subscribers",
         },
-        channelsSubscribedToCount : {
-          $size : "$subscribedTo"
+        channelsSubscribedToCount: {
+          $size: "$subscribedTo",
         },
-        isSubscribed : {
-          $cond : {
-            if : {$in : [req.user?._id, "$subscribers.subscriber"]},
-            then : true,
-            else : false
-          }
-        }
-      }
+        isSubscribed: {
+          $cond: {
+            if: { $in: [req.user?._id, "$subscribers.subscriber"] },
+            then: true,
+            else: false,
+          },
+        },
+      },
     },
     {
-      $project : {
-        fullName : 1,
-        username : 1,
-        subscribersCount : 1,
-        channelsSubscribedToCount : 1,
-        avatar : 1,
-        coverImage : 1,
-        isSubscribed : 1,
-      }
-    }
-  ])
+      $project: {
+        fullName: 1,
+        username: 1,
+        subscribersCount: 1,
+        channelsSubscribedToCount: 1,
+        avatar: 1,
+        coverImage: 1,
+        isSubscribed: 1,
+      },
+    },
+  ]);
 
-  if(!channel?.length){
-    throw new ApiError(404, "Channel Doesn't Exists")
+  if (!channel?.length) {
+    throw new ApiError(404, "Channel Doesn't Exists");
   }
 
   return res
-  .status(200)
-  .json(
-    new ApiResponse(200, channel[0],"User Channel Fetched Successfully")
-  )
-})
+    .status(200)
+    .json(
+      new ApiResponse(200, channel[0], "User Channel Fetched Successfully")
+    );
+});
 
-const userWatchHistory = asyncHandler( async (req,res) => {
+const userWatchHistory = asyncHandler(async (req, res) => {
   const user = await User.aggregate([
     {
-      $match : {
-        _id : new mongoose.Types.ObjectId(req.user._id)
-      }
+      $match: {
+        _id: new mongoose.Types.ObjectId(req.user._id),
+      },
     },
     {
-      $lookup : {
-        from : 'videos',
-        localField : "watchHistory",
-        foreignField : "_id",
-        as : "watchHistory",
-        pipeline : [
+      $lookup: {
+        from: "videos",
+        localField: "watchHistory",
+        foreignField: "_id",
+        as: "watchHistory",
+        pipeline: [
           {
-            $lookup : {
-              from : "users",
-              localField : "owner",
-              foreignField : "_id",
-              as : "owner",
-              pipeline : [
+            $lookup: {
+              from: "users",
+              localField: "owner",
+              foreignField: "_id",
+              as: "owner",
+              pipeline: [
                 {
-                  $project : {
-                    fullName : 1,
-                    username : 1,
-                    avatar : 1,
-                  }
-                }
-              ]
-            }
+                  $project: {
+                    fullName: 1,
+                    username: 1,
+                    avatar: 1,
+                  },
+                },
+              ],
+            },
           },
           {
-            $addFields : {
-              owner : {
-                $first : "$owner"
-              }
-            }
-          }
-        ]
-      }
-    }
-  ])
+            $addFields: {
+              owner: {
+                $first: "$owner",
+              },
+            },
+          },
+        ],
+      },
+    },
+  ]);
 
   return res
-  .status(200)
-  .json(
-    new ApiResponse(200, user[0].watchHistory , "User Watch History Fetched Successfully" )
-  )
-})
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        user[0].watchHistory,
+        "User Watch History Fetched Successfully"
+      )
+    );
+});
 
 export {
   registerUser,
